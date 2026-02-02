@@ -36,9 +36,15 @@ class CallManager {
     private pc: RTCPeerConnection | null = null;
     private timerInterval: any = null;
     private iceCandidatesQueue: RTCIceCandidate[] = [];
-    private config: RTCConfiguration = {
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    };
+
+    private getRTCConfig(): RTCConfiguration {
+        const store = get(userStore);
+        const config: RTCConfiguration = {
+            iceServers: store.privacySettings.iceServers.map(url => ({ urls: url })),
+            iceTransportPolicy: store.privacySettings.forceTurn ? 'relay' : 'all'
+        };
+        return config;
+    }
 
     async startCall(peerHash: string, type: 'voice' | 'video') {
         console.log(`Starting ${type} call to ${peerHash}`);
@@ -61,7 +67,7 @@ class CallManager {
             duration: 0
         });
 
-        this.pc = new RTCPeerConnection(this.config);
+        this.pc = new RTCPeerConnection(this.getRTCConfig());
 
         this.pc.ontrack = (event) => {
             console.log(`Remote ${event.track.kind} track received`);
@@ -135,7 +141,7 @@ class CallManager {
 
         callStore.update(s => ({ ...s, localStream: stream }));
 
-        this.pc = new RTCPeerConnection(this.config);
+        this.pc = new RTCPeerConnection(this.getRTCConfig());
 
         this.pc.ontrack = (event) => {
             console.log(`Remote ${event.track.kind} track received`);

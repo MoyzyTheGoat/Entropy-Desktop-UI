@@ -34,6 +34,12 @@ export interface Message {
         fileType?: string;
         size?: number;
         data?: Uint8Array;
+        bundle?: any;
+        isChunked?: boolean;
+        progress?: number;
+        totalChunks?: number;
+        isComplete?: boolean;
+        isV2?: boolean;
     };
     call_duration?: number;
     call_status?: 'missed' | 'completed' | 'declined';
@@ -58,6 +64,8 @@ export interface PrivacySettings {
     routingMode: 'direct' | 'tor' | 'custom';
     proxyUrl?: string;
     decoyMode: boolean;
+    forceTurn: boolean;
+    iceServers: string[];
 }
 
 export interface Chat {

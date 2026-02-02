@@ -1,4 +1,3 @@
-
 import { writable } from 'svelte/store';
 import type { Chat, Message, PrivacySettings } from '../types';
 
@@ -14,6 +13,8 @@ export interface AppState {
     blockedHashes: string[];
     privacySettings: PrivacySettings;
     sessionToken: string | null;
+    myGlobalNickname: string | null;
+    nicknameExpiry: number | null;
     connectionStatus: 'disconnected' | 'connecting' | 'mining' | 'connected';
     authError: string | null;
     keysMissing: boolean;
@@ -30,13 +31,17 @@ const initialState: AppState = {
     searchQuery: "",
     replyingTo: null,
     blockedHashes: [],
+    myGlobalNickname: null,
+    nicknameExpiry: null,
     privacySettings: {
         readReceipts: true,
         lastSeen: 'everyone',
         profilePhoto: 'everyone',
         routingMode: 'direct',
         proxyUrl: 'socks5://127.0.0.1:9050',
-        decoyMode: true
+        decoyMode: true,
+        forceTurn: false,
+        iceServers: ['stun:stun.l.google.com:19302']
     },
     sessionToken: null,
     connectionStatus: 'disconnected',

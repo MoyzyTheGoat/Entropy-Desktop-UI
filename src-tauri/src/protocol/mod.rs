@@ -600,3 +600,70 @@ pub fn secure_nuke_database(db_path: &std::path::Path) -> Result<(), String> {
     }
     Ok(())
 }
+pub fn save_decrypted_message(
+    conn: &rusqlite::Connection,
+    peer_hash: &str,
+    msg: &serde_json::Value
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR REPLACE INTO messages (id, peer_hash, timestamp, content, sender_hash, type, is_mine, status, reply_to_id, attachment_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            msg["id"].as_str().ok_or("Missing id")?,
+            peer_hash,
+            msg["timestamp"].as_u64().unwrap_or(0),
+            msg["content"].as_str().unwrap_or(""),
+            msg["senderHash"].as_str().unwrap_or(""),
+            msg["type"].as_str().unwrap_or("text"),
+            if msg["isMine"].as_bool().unwrap_or(false) { 1 } else { 0 },
+            msg["status"].as_str().unwrap_or("sent"),
+            msg["replyTo"]["id"].as_str(),
+            msg["attachment"].as_object().map(|_| serde_json::to_string(&msg["attachment"]).unwrap())
+        ]
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn search_messages(
+    conn: &rusqlite::Connection,
+    query: &str
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut stmt = conn.prepare(
+        "SELECT id, peer_hash, timestamp, content, sender_hash, type, is_mine, status, reply_to_id, attachment_json
+         FROM messages WHERE content LIKE ?1 ORDER BY timestamp DESC LIMIT 100"
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map([format!("%{}%", query)], |row| {
+        let id: String = row.get(0)?;
+        let peer_hash: String = row.get(1)?;
+        let timestamp: u64 = row.get(2)?;
+        let content: String = row.get(3)?;
+        let sender_hash: String = row.get(4)?;
+        let msg_type: String = row.get(5)?;
+        let is_mine: bool = row.get::<_, i32>(6)? == 1;
+        let status: String = row.get(7)?;
+        let reply_to_id: Option<String> = row.get(8)?;
+        let attachment_json: Option<String> = row.get(9)?;
+        
+        let attachment: Option<serde_json::Value> = attachment_json.and_then(|s| serde_json::from_str(&s).ok());
+
+        Ok(serde_json::json!({
+            "id": id,
+            "peerHash": peer_hash,
+            "timestamp": timestamp,
+            "content": content,
+            "senderHash": sender_hash,
+            "type": msg_type,
+            "isMine": is_mine,
+            "status": status,
+            "replyTo": reply_to_id.map(|id| serde_json::json!({ "id": id })),
+            "attachment": attachment
+        }))
+    }).map_err(|e| e.to_string())?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(results)
+}

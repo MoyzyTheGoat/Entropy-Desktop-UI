@@ -5,9 +5,13 @@ import { signalManager } from '../signal_manager';
 import { network } from '../network';
 import { toHex } from '../utils';
 import type { Message } from '../types';
+import { invoke } from '@tauri-apps/api/core';
 
 export const addMessage = (peerHash: string, msg: Message) => {
     if (msg.attachment?.data) attachmentStore.put(msg.id, msg.attachment.data).catch(e => { });
+
+    // Persist to SQLite
+    invoke('protocol_save_message', { peerHash, msg }).catch(e => console.error("Failed to persist message:", e));
 
     userStore.update(s => {
         const chat = s.chats[peerHash];

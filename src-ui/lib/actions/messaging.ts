@@ -15,6 +15,8 @@ export { addMessage, bulkDelete, deleteMessage, downloadAttachment, sendReceipt 
 
 export const setReplyingTo = (msg: Message | null) => userStore.update(s => ({ ...s, replyingTo: msg }));
 
+const incomingChunksProgress = new Map<string, { total: number, received: number, chunks: Uint8Array[], fileName: string, fileType: string, bundle: any }>();
+
 export const sendMessage = async (destId: string, content: string) => {
     const state = get(userStore);
     if (!state.identityHash) return;
@@ -67,6 +69,13 @@ export const sendMessage = async (destId: string, content: string) => {
         };
         addMessage(destId, msg);
         setReplyingTo(null);
+
+        // SYNC: Send copy to other devices
+        if (state.identityHash && destId !== state.identityHash) {
+            const syncPayload = { type: 'sync_msg', destination: destId, content, id: msgId, replyTo: replyToData };
+            signalManager.encrypt(state.identityHash, JSON.stringify(syncPayload), state.relayUrl, true)
+                .then(c => network.sendVolatile(state.identityHash!, new TextEncoder().encode(JSON.stringify(c))));
+        }
     } catch (e) {
         console.error("Send failed", e);
     }
@@ -127,51 +136,58 @@ export const sendFile = async (destId: string, file: File) => {
     if (!state.identityHash) return;
     const chat = state.chats[destId];
 
+    const CHUNK_SIZE = 512 * 1024; // 512KB chunks
     const reader = new FileReader();
+
     reader.onload = async () => {
         const buffer = reader.result as ArrayBuffer;
         const uint8 = new Uint8Array(buffer);
-
-
-        const { ciphertext, bundle } = await signalManager.encryptMedia(uint8, file.name, file.type);
+        const totalChunks = Math.ceil(uint8.length / CHUNK_SIZE);
         const msgId = crypto.randomUUID();
 
-        const contentObj = {
-            type: 'file_v2',
+        // 1. Initial bundle generation (Rust side)
+        const { ciphertext: firstChunkHex, bundle } = await signalManager.encryptMedia(new Uint8Array(0), file.name, file.type);
+        // Note: encryptMedia also generates a random key/nonce in the bundle
+
+        const initMsg = {
+            type: 'file_chunked_v1',
             id: msgId,
-            bundle,
-            data: ciphertext
+            fileName: file.name,
+            fileType: file.type,
+            fileSize: file.size,
+            totalChunks,
+            bundle
         };
 
-        if (chat?.isGroup) {
-            const targets = [];
-            for (const member of chat.members!) {
-                if (member === state.identityHash) continue;
-                const payload = { ...contentObj, groupId: destId };
-                const ciphertext = await signalManager.encrypt(member, JSON.stringify(payload), state.relayUrl);
-                targets.push({ to: member, body: ciphertext.body, msg_type: ciphertext.type });
-            }
-            network.sendJSON({ type: 'group_multicast', targets });
-        } else {
-            const ciphertext = await signalManager.encrypt(destId, JSON.stringify(contentObj), state.relayUrl);
-            await invoke('protocol_save_pending', {
-                msg: {
-                    id: msgId,
-                    recipient_hash: destId,
-                    body: JSON.stringify({ type: 'binary_routing', to: destId, body: ciphertext }),
-                    timestamp: Date.now(),
-                    retries: 0
-                }
-            });
+        // Send Init Message
+        const encryptedInit = await signalManager.encrypt(destId, JSON.stringify(initMsg), state.relayUrl);
+        network.sendBinary(destId, new TextEncoder().encode(JSON.stringify(encryptedInit)));
 
-            network.sendBinary(destId, new TextEncoder().encode(JSON.stringify(ciphertext)));
+        // 2. Send Chunks
+        for (let i = 0; i < totalChunks; i++) {
+            const start = i * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, uint8.length);
+            const chunkData = uint8.slice(start, end);
+
+            const encryptedChunk = await signalManager.encryptMediaChunk(bundle.key_b64, bundle.nonce_b64, i, chunkData);
+
+            const chunkMsg = {
+                type: 'file_chunk',
+                fileId: msgId,
+                index: i,
+                data: toBase64(encryptedChunk)
+            };
+
+            const encryptedChunkMsg = await signalManager.encrypt(destId, JSON.stringify(chunkMsg), state.relayUrl, true); // volatile for chunks? maybe not
+            network.sendBinary(destId, new TextEncoder().encode(JSON.stringify(encryptedChunkMsg)));
         }
 
+        // Add to local UI
         const msg: Message = {
             id: msgId,
             timestamp: Date.now(),
             senderHash: state.identityHash!,
-            content: `File: ${file.name}`,
+            content: `File: ${file.name} (Chunked)`,
             type: 'file',
             groupId: chat?.isGroup ? destId : undefined,
             attachment: { fileName: file.name, fileType: file.type, size: file.size, data: uint8 },
@@ -271,6 +287,81 @@ const processPlaintext = async (senderHash: string, plaintext: string, groupId?:
                 isV2: true
             };
             await attachmentStore.put(incomingMsgId, fromHex(parsed.data));
+        } else if (parsed.type === 'file_chunked_v1') {
+            type = 'file';
+            content = `File: ${parsed.fileName} (Downloading...)`;
+            attachment = {
+                fileName: parsed.fileName,
+                fileType: parsed.fileType,
+                size: parsed.fileSize,
+                totalChunks: parsed.totalChunks,
+                bundle: parsed.bundle,
+                isChunked: true,
+                progress: 0
+            };
+            incomingChunksProgress.set(parsed.id, {
+                total: parsed.totalChunks,
+                received: 0,
+                chunks: new Array(parsed.totalChunks),
+                fileName: parsed.fileName,
+                fileType: parsed.fileType,
+                bundle: parsed.bundle
+            });
+        } else if (parsed.type === 'file_chunk') {
+            const progress = incomingChunksProgress.get(parsed.fileId);
+            if (progress) {
+                try {
+                    const decryptedChunk = await signalManager.decryptMediaChunk(
+                        progress.bundle.key_b64,
+                        progress.bundle.nonce_b64,
+                        parsed.index,
+                        fromBase64(parsed.data)
+                    );
+                    progress.chunks[parsed.index] = decryptedChunk;
+                    progress.received++;
+
+                    // Update UI progress
+                    userStore.update(s => {
+                        const chat = s.chats[actualGroupId || senderHash];
+                        if (chat) {
+                            const msg = chat.messages.find(m => m.id === parsed.fileId);
+                            if (msg && msg.attachment) {
+                                msg.attachment.progress = (progress.received / progress.total) * 100;
+                            }
+                        }
+                        return { ...s };
+                    });
+
+                    if (progress.received === progress.total) {
+                        // All chunks received! Reassemble.
+                        const totalLength = progress.chunks.reduce((acc, c) => acc + c.length, 0);
+                        const finalBuffer = new Uint8Array(totalLength);
+                        let offset = 0;
+                        for (const chunk of progress.chunks) {
+                            finalBuffer.set(chunk, offset);
+                            offset += chunk.length;
+                        }
+
+                        await attachmentStore.put(parsed.fileId, finalBuffer);
+                        incomingChunksProgress.delete(parsed.fileId);
+
+                        userStore.update(s => {
+                            const chat = s.chats[actualGroupId || senderHash];
+                            if (chat) {
+                                const msg = chat.messages.find(m => m.id === parsed.fileId);
+                                if (msg) {
+                                    msg.content = `File: ${progress.fileName}`;
+                                    if (msg.attachment) msg.attachment.isComplete = true;
+                                }
+                            }
+                            return { ...s };
+                        });
+                    }
+                } catch (e) {
+                    console.error("Chunk decryption failed", e);
+                }
+            }
+            return;
         } else if (parsed.type === 'typing') {
             userStore.update(s => {
                 if (s.chats[senderHash]) s.chats[senderHash].isTyping = parsed.isTyping;
@@ -342,6 +433,30 @@ const processPlaintext = async (senderHash: string, plaintext: string, groupId?:
                 status: 'read'
             };
             addMessage(senderHash, msg);
+            return;
+        } else if (parsed.type === 'block_sync') {
+            userStore.update(s => {
+                if (parsed.isBlocked) {
+                    if (!s.blockedHashes.includes(parsed.peerHash)) s.blockedHashes = [...s.blockedHashes, parsed.peerHash];
+                } else {
+                    s.blockedHashes = s.blockedHashes.filter(h => h !== parsed.peerHash);
+                }
+                return { ...s };
+            });
+            return;
+        } else if (parsed.type === 'sync_msg') {
+            // Message sent from ANOTHER device of mine
+            const msg: Message = {
+                id: parsed.id || crypto.randomUUID(),
+                timestamp: Date.now(),
+                senderHash: state.identityHash!,
+                content: parsed.content,
+                type: 'text',
+                isMine: true,
+                status: 'sent',
+                replyTo: parsed.replyTo
+            };
+            addMessage(parsed.destination, msg);
             return;
         }
     } catch (e) { }
