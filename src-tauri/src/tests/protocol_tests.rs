@@ -252,6 +252,7 @@ fn test_group_messaging_flow() {
         group_id: "test_group".to_string(),
         my_sender_key: Some(create_group_sender_key()),
         member_sender_keys: HashMap::new(),
+        members: vec![],
     };
 
     let dist_msg = create_group_distribution_message(&alice_gs).unwrap();
@@ -260,6 +261,7 @@ fn test_group_messaging_flow() {
         group_id: "test_group".to_string(),
         my_sender_key: Some(create_group_sender_key()),
         member_sender_keys: HashMap::new(),
+        members: vec![],
     };
     
     let alice_sk = SenderKey {

@@ -316,6 +316,16 @@ export class SignalManager {
         return new Uint8Array(data);
     }
 
+    async encryptMediaChunk(keyB64: string, nonceB64: string, chunkIndex: number, data: Uint8Array): Promise<Uint8Array> {
+        const res = await invoke('protocol_encrypt_media_chunk', { keyB64, nonceB64, chunkIndex, data: Array.from(data) }) as number[];
+        return new Uint8Array(res);
+    }
+
+    async decryptMediaChunk(keyB64: string, nonceB64: string, chunkIndex: number, ciphertext: Uint8Array): Promise<Uint8Array> {
+        const res = await invoke('protocol_decrypt_media_chunk', { keyB64, nonceB64, chunkIndex, ciphertext: Array.from(ciphertext) }) as number[];
+        return new Uint8Array(res);
+    }
+
     async verifySession(remoteHash: string, isVerified: boolean): Promise<void> {
         await invoke('protocol_verify_session', { remoteHash, isVerified });
     }

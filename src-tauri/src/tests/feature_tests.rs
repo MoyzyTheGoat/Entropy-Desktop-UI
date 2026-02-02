@@ -73,8 +73,6 @@ mod tests {
              let res = init_database(&conn);
              // It might error here if content is garbage
              if res.is_ok() {
-                 // If it initialized, it might have overwritten the file or treated it as empty. 
-                 // Let's check if we can write to it.
                  conn.execute("CREATE TABLE IF NOT EXISTS test (id INTEGER PRIMARY KEY)", []).unwrap();
              }
         }

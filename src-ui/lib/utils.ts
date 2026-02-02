@@ -1,3 +1,6 @@
+import { invoke } from '@tauri-apps/api/core';
+import { get } from 'svelte/store';
+import { userStore } from './stores/user';
 
 export const parseLinkPreview = async (text: string): Promise<any> => {
     const urlRegex = /(https?:\/\/[^\s]+)/g;
@@ -5,14 +8,15 @@ export const parseLinkPreview = async (text: string): Promise<any> => {
     if (!match) return null;
 
     const url = match[0];
-    try {
-        const response = await fetch(url, { mode: 'no-cors' });
+    const store = get(userStore);
+    const proxyUrl = store.privacySettings.routingMode !== 'direct' ? store.privacySettings.proxyUrl : undefined;
 
-        return {
+    try {
+        const preview = await invoke('get_link_preview', {
             url,
-            title: url.replace(/https?:\/\/(www\.)?/, '').split('/')[0],
-            siteName: new URL(url).hostname
-        };
+            proxyUrl
+        });
+        return preview;
     } catch (e) {
         return { url, title: url, siteName: new URL(url).hostname };
     }

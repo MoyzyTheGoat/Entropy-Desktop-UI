@@ -78,6 +78,10 @@ export const updateMyProfile = (alias: string, pfp: string | null) => {
     Object.keys(state.chats).forEach(peerHash => {
         if (!state.chats[peerHash].isGroup) broadcastProfile(peerHash);
     });
+    // Sync with other devices
+    if (state.identityHash) {
+        broadcastProfile(state.identityHash);
+    }
 };
 
 export const broadcastProfile = async (peerHash: string) => {
@@ -152,12 +156,22 @@ export const bulkStar = (peerHash: string, msgIds: string[]) => userStore.update
     return { ...s, chats: { ...s.chats } };
 });
 
-export const toggleBlock = (peerHash: string) => userStore.update(s => {
-    const isBlocked = s.blockedHashes.includes(peerHash);
-    if (isBlocked) s.blockedHashes = s.blockedHashes.filter(h => h !== peerHash);
-    else s.blockedHashes = [...s.blockedHashes, peerHash];
-    return { ...s };
-});
+export const toggleBlock = (peerHash: string) => {
+    userStore.update(s => {
+        const isBlocked = s.blockedHashes.includes(peerHash);
+        if (isBlocked) s.blockedHashes = s.blockedHashes.filter(h => h !== peerHash);
+        else s.blockedHashes = [...s.blockedHashes, peerHash];
+
+        // Sync with other devices
+        if (s.identityHash) {
+            const syncMsg = { type: 'block_sync', peerHash, isBlocked: !isBlocked };
+            signalManager.encrypt(s.identityHash, JSON.stringify(syncMsg), s.relayUrl, true)
+                .then(c => network.sendVolatile(s.identityHash!, new TextEncoder().encode(JSON.stringify(c))));
+        }
+
+        return { ...s };
+    });
+};
 
 export const updatePrivacy = (settings: Partial<PrivacySettings>) => userStore.update(s => ({ ...s, privacySettings: { ...s.privacySettings, ...settings } }));
 

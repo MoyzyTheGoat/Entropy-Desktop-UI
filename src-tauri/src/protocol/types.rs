@@ -82,6 +82,8 @@ pub struct MediaKeyBundle {
     pub digest: String, 
     pub file_name: String,
     pub file_type: String,
+    pub is_chunked: bool,
+    pub chunk_size: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -97,6 +99,7 @@ pub struct GroupState {
     pub group_id: String,
     pub my_sender_key: Option<SenderKey>,
     pub member_sender_keys: HashMap<String, SenderKey>, 
+    pub members: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -127,6 +130,27 @@ pub fn init_database(conn: &Connection) -> Result<(), String> {
     
     conn.execute(
         "CREATE TABLE IF NOT EXISTS groups (group_id TEXT PRIMARY KEY, state TEXT);",
+        [],
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS messages (
+            id TEXT PRIMARY KEY,
+            peer_hash TEXT,
+            timestamp INTEGER,
+            content TEXT,
+            sender_hash TEXT,
+            type TEXT,
+            is_mine INTEGER,
+            status TEXT,
+            reply_to_id TEXT,
+            attachment_json TEXT
+        );",
+        [],
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_peer ON messages(peer_hash);",
         [],
     ).map_err(|e| e.to_string())?;
 
